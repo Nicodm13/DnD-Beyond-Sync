@@ -26,11 +26,16 @@ Click **Load unpacked** and select the folder containing the files.
 
 ## Usage
 
-- Open a D&D Beyond game as the **Leader** (DM). The leader should now see a blue chip in the bottom left corner that says "Leader"
+- **Leader (DM):**  
+  Open a D&D Beyond game as the DM. A **blue badge** labeled **“Leader”** will appear in the bottom-left corner of the screen.  
 
-- Open the Spectator View. The **Spectator** should now see a green chip in the bottom left corner that says "Spectator"
+- **Spectator:**  
+  In the same game, click the **Spectator View** button in the D&D Beyond toolbar.
+  The spectator window will display a **green badge** labeled **“Spectator”** in the bottom-left corner.  
 
-- Spectators will see the map move and zoom exactly as the Leader does, but without local control.
+- **Sync in Action:**  
+  As the Leader pans or zooms the map, all Spectators automatically follow along in real time — with no local control required.
+
 
 ## Notes
 
