@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "D&D Beyond Sync",
+  "version": "1.0.0",
+  "description": "Keeps spectators in sync with the DM’s map view on D&D Beyond by mirroring pan and zoom between tabs in the same game.",
+  "content_scripts": [
+    {
+      "matches": ["https://www.dndbeyond.com/games/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}
