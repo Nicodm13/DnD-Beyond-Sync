@@ -3,7 +3,6 @@
 //
 // - Leader (DM): broadcasts pointer drag (pan), wheel (zoom), and HUD zoom button clicks.
 // - Spectator (viewer): blocks local pan/zoom, hides toolbar, listens to leader and replays events.
-// - Spectator mode: add ?spectator=true to the URL.
 // - Room scope: derived from /games/<id>. If not found, uses full path and origin.
 //
 // Created by Nicolai D. Madsen (@nicodm13) 2025
