@@ -43,6 +43,19 @@ Click **Load unpacked** and select the folder containing the files.
 
 ---
 
+---
+
+## Reporting Issues
+
+If you find a bug or have a feature request, please [open an issue](../../issues) on this repository.  
+
+When reporting an issue, please include:
+- A short description of the problem  
+- Steps to reproduce it  
+- Any error messages from the browser console (press `F12` → Console tab)  
+
+This will help me debug and improve the extension quickly.
+
 ## Credits
 
 Created by **Nicolai D. Madsen (@nicodm13), 2025**.
