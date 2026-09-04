@@ -46,6 +46,10 @@
     if (!canvases.length) return null;
     let best = null, bestArea = 0;
     for (const c of canvases) {
+      // Skip decorative/overlay canvases that can never receive real input
+      // (e.g. effects/weather layers rendered on top with pointer-events:none).
+      const cs = getComputedStyle(c);
+      if (cs.pointerEvents === 'none') continue;
       const r = c.getBoundingClientRect();
       const area = Math.max(0, r.width) * Math.max(0, r.height);
       if (area > bestArea) { best = c; bestArea = area; }
@@ -125,10 +129,18 @@
   }
 
   function canBroadcastPan(ev = null) {
-    // If the UI is in a grabbing state AND the Pan tool is NOT active; block.
-    if (isGrabbingCursor() && !isAllowedToolActive()) return false;
-
-    // If any non-pan tool is currently active; block.
+    // If any non-pan tool is confirmed active (via a positive, specific match); block.
+    // NOTE: isAllowedToolActive()/hasActiveNonAllowedTool() rely on D&D Beyond's
+    // hashed CSS-module classnames (e.g. "variations_active__TdNXJ") which change
+    // across DDB frontend deploys. hasActiveNonAllowedTool() already fails OPEN
+    // (no block) when its selector matches nothing, which is what we want when
+    // DDB's markup has drifted from what this extension was written against.
+    // isGrabbingCursor() alone used to gate this too, but a "grab" cursor is the
+    // NORMAL state while panning, and isAllowedToolActive() requiring a positive
+    // selector match to unblock meant a stale selector permanently blocked every
+    // pan drag. Drop that fail-closed check; hasActiveNonAllowedTool() below is
+    // the real (fail-open) guard against broadcasting while a genuinely different
+    // tool (e.g. token drag, drawing) is active.
     if (hasActiveNonAllowedTool()) return false;
 
     // If an event is provided, require a direct canvas hit (prevents dropdown/overlay cases).
@@ -139,57 +151,6 @@
 
     // Allow the pan broadcast.
     return true; 
-  }
-
-  // ---------- Synth dispatch helpers ----------
-  function dispatchMouse(el, type, opts) {
-    const e = new MouseEvent(type, {
-      bubbles: true, cancelable: true, composed: true,
-      clientX: opts.clientX, clientY: opts.clientY,
-      button: opts.button ?? 0, buttons: opts.buttons ?? 0,
-      altKey: !!opts.altKey, ctrlKey: !!opts.ctrlKey, shiftKey: !!opts.shiftKey, metaKey: !!opts.metaKey
-    });
-    el.dispatchEvent(e);
-  }
-  function dispatchWheel(el, opts) {
-    const e = new WheelEvent('wheel', {
-      bubbles: true, cancelable: true, composed: true,
-      clientX: opts.clientX, clientY: opts.clientY,
-      deltaX: opts.deltaX, deltaY: opts.deltaY, deltaMode: 0,
-      altKey: !!opts.altKey, ctrlKey: !!opts.ctrlKey, shiftKey: !!opts.shiftKey, metaKey: !!opts.metaKey
-    });
-    el.dispatchEvent(e);
-  }
-  function dispatchPointer(target, type, opts) {
-    const E = window.PointerEvent || MouseEvent;
-    const e = new E(type, {
-      bubbles: true, cancelable: true, composed: true,
-      clientX: opts.clientX, clientY: opts.clientY,
-      button: opts.button ?? 0, buttons: opts.buttons ?? 0,
-      altKey: !!opts.altKey, ctrlKey: !!opts.ctrlKey, shiftKey: !!opts.shiftKey, metaKey: !!opts.metaKey,
-      pointerId: opts.pointerId ?? 1,
-      pointerType: opts.pointerType ?? 'mouse',
-      isPrimary: true,
-      pressure: opts.pressure ?? ((type === 'pointerdown' || opts.buttons) ? 0.5 : 0),
-    });
-    target.dispatchEvent(e);
-  }
-  function fanOutDispatch(type, opts, canv) {
-    const mouseType = type.replace('pointer','mouse');
-    if (type.endsWith('down')) {
-      dispatchMouse(canv, mouseType, opts);
-    } else if (type.endsWith('move') || type.endsWith('up')) {
-      dispatchMouse(canv, mouseType, opts);
-      dispatchMouse(document, mouseType, opts);
-      dispatchMouse(window,   mouseType, opts);
-    }
-    if (type.endsWith('down')) {
-      dispatchPointer(canv, type, opts);
-    } else if (type.endsWith('move') || type.endsWith('up')) {
-      dispatchPointer(canv, type, opts);
-      dispatchPointer(document, type, opts);
-      dispatchPointer(window,   type, opts);
-    }
   }
 
   // ---------- Input Synchronization ----------
@@ -226,6 +187,7 @@
         const n = normPos(ev.clientX, ev.clientY);
         sendMouseMove({ type: 'im_mouse', ev: 'mousemove', room,
           x: n.x, y: n.y, button: 0, buttons: ev.buttons,
+          movementX: ev.movementX, movementY: ev.movementY,
           altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
         });
       }, { passive: true });
@@ -263,6 +225,7 @@
         const n = normPos(ev.clientX, ev.clientY);
         sendPtrMove({ type: 'im_ptr', ev: 'pointermove', room,
           x: n.x, y: n.y, button: 0, buttons: ev.buttons,
+          movementX: ev.movementX, movementY: ev.movementY,
           altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey,
           pointerId: ev.pointerId, pointerType: ev.pointerType, pressure: ev.pressure
         });
@@ -380,6 +343,42 @@
     });
   }
 
+  // ---------- Synth dispatch helpers (canvas-only PointerEvents) ----------
+  // Lesson from earlier debugging: dispatching synthetic events to
+  // document/window (in addition to the canvas) caused crashes inside DDB's
+  // Three.js picking code — offsetX/offsetY (which getImageData-based hit
+  // testing likely reads) are only well-defined for events dispatched
+  // directly on a rendered Element, not on document/window. Dispatching
+  // ONLY on the canvas element avoids that. We also keep a single stable
+  // pointerId for the whole synthetic gesture and always set isPrimary,
+  // pointerType, and pressure explicitly since react-three-fiber/drei
+  // controls commonly key internal per-pointer state off pointerId.
+  const SYNTH_POINTER_ID = 9001;
+  function dispatchPointer(canv, type, opts) {
+    const e = new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: opts.clientX, clientY: opts.clientY,
+      movementX: opts.movementX ?? 0, movementY: opts.movementY ?? 0,
+      button: opts.button ?? 0, buttons: opts.buttons ?? 0,
+      altKey: !!opts.altKey, ctrlKey: !!opts.ctrlKey, shiftKey: !!opts.shiftKey, metaKey: !!opts.metaKey,
+      pointerId: SYNTH_POINTER_ID,
+      pointerType: 'mouse',
+      isPrimary: true,
+      width: 1, height: 1, tiltX: 0, tiltY: 0, twist: 0,
+      pressure: (type === 'pointerup') ? 0 : 0.5,
+    });
+    canv.dispatchEvent(e);
+  }
+  function dispatchWheel(canv, opts) {
+    const e = new WheelEvent('wheel', {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: opts.clientX, clientY: opts.clientY,
+      deltaX: opts.deltaX, deltaY: opts.deltaY, deltaMode: 0,
+      altKey: !!opts.altKey, ctrlKey: !!opts.ctrlKey, shiftKey: !!opts.shiftKey, metaKey: !!opts.metaKey
+    });
+    canv.dispatchEvent(e);
+  }
+
   // ---------- Message handling ----------
   bc.onmessage = (ev) => {
     const p = ev.data;
@@ -394,16 +393,16 @@
     if (p.type === 'im_mouse' && canv) {
       const opts = {
         clientX, clientY,
+        movementX: p.movementX ?? 0, movementY: p.movementY ?? 0,
         button: p.button, buttons: p.buttons,
         altKey: p.altKey, ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, metaKey: p.metaKey
       };
       if (p.ev === 'mousedown') {
-        dispatchMouse(canv, 'mousedown', opts);
-        dispatchPointer(canv, 'pointerdown', { ...opts, pointerType: 'mouse' });
+        dispatchPointer(canv, 'pointerdown', opts);
       } else if (p.ev === 'mousemove') {
-        fanOutDispatch('pointermove', { ...opts, pointerType: 'mouse' }, canv);
+        dispatchPointer(canv, 'pointermove', opts);
       } else if (p.ev === 'mouseup') {
-        fanOutDispatch('pointerup',   { ...opts, pointerType: 'mouse' }, canv);
+        dispatchPointer(canv, 'pointerup', opts);
       }
       return;
     }
@@ -411,17 +410,16 @@
     if (p.type === 'im_ptr' && canv) {
       const opts = {
         clientX, clientY,
+        movementX: p.movementX ?? 0, movementY: p.movementY ?? 0,
         button: p.button, buttons: p.buttons,
-        altKey: p.altKey, ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, metaKey: p.metaKey,
-        pointerId: p.pointerId, pointerType: p.pointerType, pressure: p.pressure
+        altKey: p.altKey, ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, metaKey: p.metaKey
       };
       if (p.ev === 'pointerdown') {
         dispatchPointer(canv, 'pointerdown', opts);
-        dispatchMouse(canv, 'mousedown', opts);
       } else if (p.ev === 'pointermove') {
-        fanOutDispatch('pointermove', opts, canv);
+        dispatchPointer(canv, 'pointermove', opts);
       } else if (p.ev === 'pointerup') {
-        fanOutDispatch('pointerup', opts, canv);
+        dispatchPointer(canv, 'pointerup', opts);
       }
       return;
     }
