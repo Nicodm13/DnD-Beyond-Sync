@@ -67,31 +67,32 @@
 
     return { plus, minus, reset, synthClick };
   }
+
+  // Current zoom in percent, read from the HUD's "Reset Zoom" label (e.g. "58.8%").
+  function readZoom() {
+    const hud = findZoomHud();
+    const zoom = hud ? parseFloat(hud.reset.textContent) : NaN;
+    return Number.isFinite(zoom) ? zoom : null;
+  }
   
 
   // ---------- Tool and Cursor guards ----------
-  function isAllowedToolActive() {
-    const active = Array.from(document.querySelectorAll('button.variations_active__TdNXJ'));
-    if (active.some(b => (b.getAttribute('data-dd-action-name')||'').toLowerCase().includes('pan'))) return true;
-    const panBtn = document.querySelector('button[data-dd-action-name*="Pan"][data-active="true"], button[data-tooltip-id="pan"][data-active="true"]');
-    return !!panBtn;
+  // Toolbar buttons have a stable data-dd-action-name ("Pan Tool", "Draw Tool", ...).
+  // The active one has data-active="true" or a CSS-module class ending in "__active";
+  // the hash before that suffix changes between D&D Beyond releases.
+  function activeToolNames() {
+    return Array.from(document.querySelectorAll('button[data-dd-action-name]'))
+      .filter(b => b.getAttribute('data-active') === 'true' || /__active\b/.test(b.className))
+      .map(b => b.getAttribute('data-dd-action-name').toLowerCase());
   }
 
+  function isAllowedToolActive() {
+    return activeToolNames().some(name => name.includes('pan'));
+  }
+
+  // Pan and the token/sticker browsers don't interfere with panning; any other active tool does.
   function hasActiveNonAllowedTool() {
-    const active = Array.from(document.querySelectorAll('button.variations_active__TdNXJ'));
-    if (active.length === 0) return false;
-
-    return !active.every(btn => {
-      const name = (btn.getAttribute('data-dd-action-name') || '').toLowerCase();
-      const tip  = (btn.getAttribute('data-tooltip-id') || '').toLowerCase();
-
-      // Allowed actives
-      if (name.includes('pan')) return true;
-      if (tip === 'token-browser' || tip === 'sticker-browser') return true;
-
-      // Everything else is blocking
-      return false; 
-    });
+    return activeToolNames().some(name => !/pan|token browser|sticker browser/.test(name));
   }
 
   function isGrabbingCursor() {
@@ -194,125 +195,86 @@
 
   // ---------- Input Synchronization ----------
   if (role === 'leader') {
-    function attachLeader() {
-      const target = largestCanvas();
-      if (!target) { setTimeout(attachLeader, 800); return; }
-
-      function normPos(clientX, clientY) {
-        const r = target.getBoundingClientRect();
-        const x = (clientX - r.left) / (r.width || 1);
-        const y = (clientY - r.top) / (r.height || 1);
-        return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
-      }
-
-      // --- Mouse drag (pan) ---
-      let dragging = false;
-      target.addEventListener('mousedown', (ev) => {
-        if (!canBroadcastPan(ev)) return;
-        dragging = true;
-        const n = normPos(ev.clientX, ev.clientY);
-        bc.postMessage({ type: 'im_mouse', ev: 'mousedown', room,
-          x: n.x, y: n.y, button: ev.button, buttons: ev.buttons ?? (1 << ev.button),
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
-        });
-      });
-
-      const sendMouseMove = throttle((payload) => { try { bc.postMessage(payload); } catch {} }, 8);
-      window.addEventListener('mousemove', (ev) => {
-        if (!dragging) return;
-        // stop broadcasting if we leave the canvas or a dropdown covers it
-        if (!isPointerDirectlyOverCanvas(ev, target)) { dragging = false; return; }
-        if (!canBroadcastPan()) { dragging = false; return; }
-        const n = normPos(ev.clientX, ev.clientY);
-        sendMouseMove({ type: 'im_mouse', ev: 'mousemove', room,
-          x: n.x, y: n.y, button: 0, buttons: ev.buttons,
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
-        });
-      }, { passive: true });
-
-      window.addEventListener('mouseup', (ev) => {
-        if (!dragging) return;
-        dragging = false;
-        if (!isPointerDirectlyOverCanvas(ev, target)) return;
-        if (!canBroadcastPan()) return;
-        const n = normPos(ev.clientX, ev.clientY);
-        bc.postMessage({ type: 'im_mouse', ev: 'mouseup', room,
-          x: n.x, y: n.y, button: ev.button, buttons: ev.buttons,
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
-        });
-      });
-
-      // --- Pointer drag (pan) ---
-      let pDragging = false;
-      target.addEventListener('pointerdown', (ev) => {
-        if (!canBroadcastPan(ev)) return;
-        pDragging = true;
-        const n = normPos(ev.clientX, ev.clientY);
-        bc.postMessage({ type: 'im_ptr', ev: 'pointerdown', room,
-          x: n.x, y: n.y, button: ev.button, buttons: ev.buttons ?? (1 << ev.button),
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey,
-          pointerId: ev.pointerId, pointerType: ev.pointerType, pressure: ev.pressure
-        });
-      });
-
-      const sendPtrMove = throttle((payload) => { try { bc.postMessage(payload); } catch {} }, 8);
-      window.addEventListener('pointermove', (ev) => {
-        if (!pDragging) return;
-        if (!isPointerDirectlyOverCanvas(ev, target)) { pDragging = false; return; }
-        if (!canBroadcastPan()) { pDragging = false; return; }
-        const n = normPos(ev.clientX, ev.clientY);
-        sendPtrMove({ type: 'im_ptr', ev: 'pointermove', room,
-          x: n.x, y: n.y, button: 0, buttons: ev.buttons,
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey,
-          pointerId: ev.pointerId, pointerType: ev.pointerType, pressure: ev.pressure
-        });
-      }, { passive: true });
-
-      window.addEventListener('pointerup', (ev) => {
-        if (!pDragging) return;
-        pDragging = false;
-        if (!isPointerDirectlyOverCanvas(ev, target)) return;
-        if (!canBroadcastPan()) return;
-        const n = normPos(ev.clientX, ev.clientY);
-        bc.postMessage({ type: 'im_ptr', ev: 'pointerup', room,
-          x: n.x, y: n.y, button: ev.button, buttons: ev.buttons,
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey,
-          pointerId: ev.pointerId, pointerType: ev.pointerType, pressure: ev.pressure
-        });
-      });
-
-      // --- Wheel (zoom) ---
-      const sendWheel = throttle((payload) => { try { bc.postMessage(payload); } catch {} }, 8);
-      window.addEventListener('wheel', (ev) => {
-        if (!isPointerDirectlyOverCanvas(ev, target)) return;
-
-        const n = normPos(ev.clientX, ev.clientY);
-        sendWheel({ type: 'im_wheel', room,
-          x: n.x, y: n.y,
-          deltaX: ev.deltaX, deltaY: ev.deltaY,
-          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
-        });
-      }, { passive: true });
-
-      // --- HUD Buttons (zoom) ---
-      function attachHudBroadcast() {
-        const hud = findZoomHud();
-        if (!hud) return false;
-        const sendHud = (action) => bc.postMessage({ type: 'im_zoom_button', room, action });
-        hud.plus.addEventListener('click',  () => sendHud('plus'),  true);
-        hud.minus.addEventListener('click', () => sendHud('minus'), true);
-        hud.reset.addEventListener('click', () => sendHud('reset'), true);
-        return true;
-      }
-      attachHudBroadcast();
-
-      const check = setInterval(() => {
-        if (!document.contains(target)) { clearInterval(check); attachLeader(); return; }
-        if (!findZoomHud()) attachHudBroadcast();
-      }, 2000);
-      window.addEventListener('beforeunload', () => clearInterval(check));
+    // Listen on window and resolve the map canvas per event, since the
+    // canvas can be swapped or resized after the page loads.
+    function normPos(canv, clientX, clientY) {
+      const r = canv.getBoundingClientRect();
+      const x = (clientX - r.left) / (r.width || 1);
+      const y = (clientY - r.top) / (r.height || 1);
+      return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
     }
-    attachLeader();
+
+    // --- Drag (pan), for both mouse and pointer events ---
+    function broadcastDrag(prefix, type) {
+      let canv = null;
+      const send = (phase, ev) => {
+        if (!canv) return;
+        const n = normPos(canv, ev.clientX, ev.clientY);
+        const msg = { type, ev: prefix + phase, room,
+          x: n.x, y: n.y,
+          button: phase === 'move' ? 0 : ev.button,
+          buttons: phase === 'down' ? (ev.buttons ?? (1 << ev.button)) : ev.buttons,
+          altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
+        };
+        if (prefix === 'pointer') {
+          Object.assign(msg, { pointerId: ev.pointerId, pointerType: ev.pointerType, pressure: ev.pressure });
+        }
+        try { bc.postMessage(msg); } catch {}
+      };
+      const sendMove = throttle(send, 8);
+
+      window.addEventListener(prefix + 'down', (ev) => {
+        // Tool checks only run here: the cursor switches to "grabbing" mid-drag.
+        if (!canBroadcastPan(ev)) return;
+        canv = largestCanvas();
+        send('down', ev);
+      }, true);
+
+      window.addEventListener(prefix + 'move', (ev) => {
+        if (!canv) return;
+        // Stop if we leave the canvas or a dropdown covers it.
+        if (!isPointerDirectlyOverCanvas(ev, canv)) { canv = null; return; }
+        sendMove('move', ev);
+      }, { passive: true, capture: true });
+
+      window.addEventListener(prefix + 'up', (ev) => {
+        send('up', ev);
+        canv = null;
+      }, true);
+    }
+    broadcastDrag('mouse', 'im_mouse');
+    broadcastDrag('pointer', 'im_ptr');
+
+    // --- Wheel (zoom) ---
+    // Send the zoom level the wheel settles on instead of each wheel event. The map
+    // only applies some events in a fast burst, so replaying them drifts.
+    let wheelPos = null, wheelTimer = null;
+    window.addEventListener('wheel', (ev) => {
+      const canv = largestCanvas();
+      if (!isPointerDirectlyOverCanvas(ev, canv)) return;
+      wheelPos = normPos(canv, ev.clientX, ev.clientY);
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => {
+        const zoom = readZoom();
+        if (zoom !== null) bc.postMessage({ type: 'im_zoom_level', room, zoom, x: wheelPos.x, y: wheelPos.y });
+      }, 250);
+    }, { passive: true, capture: true });
+
+    // --- HUD Buttons (zoom) ---
+    // The buttons can render late or be replaced, so bind any new ones periodically.
+    const boundHud = new WeakSet();
+    function attachHudBroadcast() {
+      const hud = findZoomHud();
+      if (!hud) return;
+      for (const action of ['plus', 'minus', 'reset']) {
+        const btn = hud[action];
+        if (boundHud.has(btn)) continue;
+        boundHud.add(btn);
+        btn.addEventListener('click', () => bc.postMessage({ type: 'im_zoom_button', room, action }), true);
+      }
+    }
+    attachHudBroadcast();
+    setInterval(attachHudBroadcast, 2000);
   }
 
   // ---------- Spectator Input Block ----------
@@ -360,7 +322,7 @@
       );
     }
 
-    const toolbar = document.querySelector('.styles_toolbarPlayer__U4Dop');
+    const toolbar = document.querySelector('button[data-dd-action-name$=" Tool"]')?.closest('[class*="__toolbar"]');
     if (toolbar) toolbar.style.display = 'none';
   }
 
@@ -377,6 +339,38 @@
     window.addEventListener('load', () => {
       enforceSpectatorHudAndToolbar();
       blockSpectatorInteractions();
+    });
+  }
+
+  // ---------- Spectator zoom matching ----------
+  // Each wheel event moves the map's zoom by one fixed step, so step toward the
+  // leader's level at the leader's cursor position until within half a step.
+  let zoomRun = 0;
+  async function zoomTo(target, clientX, clientY) {
+    const run = ++zoomRun; // a newer target cancels this one
+    let step = 0;
+    for (let i = 0; i < 100 && run === zoomRun; i++) {
+      const cur = readZoom();
+      const canv = largestCanvas();
+      if (cur === null || !canv) return;
+      const diff = target - cur;
+      if (Math.abs(diff) <= Math.max(0.5, step / 2)) return;
+      dispatchWheel(canv, { clientX, clientY, deltaX: 0, deltaY: diff > 0 ? -100 : 100 });
+      const next = await waitForZoomChange(cur);
+      if (next === null) return; // zoom limit reached
+      step = Math.abs(next - cur);
+    }
+  }
+
+  function waitForZoomChange(prev, timeoutMs = 500) {
+    const start = Date.now();
+    return new Promise(resolve => {
+      (function check() {
+        const z = readZoom();
+        if (z !== null && z !== prev) return resolve(z);
+        if (Date.now() - start > timeoutMs) return resolve(null);
+        setTimeout(check, 16);
+      })();
     });
   }
 
@@ -426,12 +420,8 @@
       return;
     }
 
-    if (p.type === 'im_wheel' && canv) {
-      dispatchWheel(canv, {
-        clientX, clientY,
-        deltaX: p.deltaX, deltaY: p.deltaY,
-        altKey: p.altKey, ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, metaKey: p.metaKey
-      });
+    if (p.type === 'im_zoom_level') {
+      zoomTo(p.zoom, clientX, clientY);
       return;
     }
 
