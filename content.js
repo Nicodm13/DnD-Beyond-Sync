@@ -70,28 +70,22 @@
   
 
   // ---------- Tool and Cursor guards ----------
-  function isAllowedToolActive() {
-    const active = Array.from(document.querySelectorAll('button.variations_active__TdNXJ'));
-    if (active.some(b => (b.getAttribute('data-dd-action-name')||'').toLowerCase().includes('pan'))) return true;
-    const panBtn = document.querySelector('button[data-dd-action-name*="Pan"][data-active="true"], button[data-tooltip-id="pan"][data-active="true"]');
-    return !!panBtn;
+  // Toolbar buttons have a stable data-dd-action-name ("Pan Tool", "Draw Tool", ...).
+  // The active one has data-active="true" or a CSS-module class ending in "__active";
+  // the hash before that suffix changes between D&D Beyond releases.
+  function activeToolNames() {
+    return Array.from(document.querySelectorAll('button[data-dd-action-name]'))
+      .filter(b => b.getAttribute('data-active') === 'true' || /__active\b/.test(b.className))
+      .map(b => b.getAttribute('data-dd-action-name').toLowerCase());
   }
 
+  function isAllowedToolActive() {
+    return activeToolNames().some(name => name.includes('pan'));
+  }
+
+  // Pan and the token/sticker browsers don't interfere with panning; any other active tool does.
   function hasActiveNonAllowedTool() {
-    const active = Array.from(document.querySelectorAll('button.variations_active__TdNXJ'));
-    if (active.length === 0) return false;
-
-    return !active.every(btn => {
-      const name = (btn.getAttribute('data-dd-action-name') || '').toLowerCase();
-      const tip  = (btn.getAttribute('data-tooltip-id') || '').toLowerCase();
-
-      // Allowed actives
-      if (name.includes('pan')) return true;
-      if (tip === 'token-browser' || tip === 'sticker-browser') return true;
-
-      // Everything else is blocking
-      return false; 
-    });
+    return activeToolNames().some(name => !/pan|token browser|sticker browser/.test(name));
   }
 
   function isGrabbingCursor() {
@@ -319,7 +313,7 @@
       );
     }
 
-    const toolbar = document.querySelector('.styles_toolbarPlayer__U4Dop');
+    const toolbar = document.querySelector('button[data-dd-action-name$=" Tool"]')?.closest('[class*="__toolbar"]');
     if (toolbar) toolbar.style.display = 'none';
   }
 
