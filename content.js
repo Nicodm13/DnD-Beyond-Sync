@@ -67,6 +67,13 @@
 
     return { plus, minus, reset, synthClick };
   }
+
+  // Current zoom in percent, read from the HUD's "Reset Zoom" label (e.g. "58.8%").
+  function readZoom() {
+    const hud = findZoomHud();
+    const zoom = hud ? parseFloat(hud.reset.textContent) : NaN;
+    return Number.isFinite(zoom) ? zoom : null;
+  }
   
 
   // ---------- Tool and Cursor guards ----------
@@ -239,16 +246,18 @@
     broadcastDrag('pointer', 'im_ptr');
 
     // --- Wheel (zoom) ---
-    const sendWheel = throttle((payload) => { try { bc.postMessage(payload); } catch {} }, 8);
+    // Send the zoom level the wheel settles on instead of each wheel event. The map
+    // only applies some events in a fast burst, so replaying them drifts.
+    let wheelPos = null, wheelTimer = null;
     window.addEventListener('wheel', (ev) => {
       const canv = largestCanvas();
       if (!isPointerDirectlyOverCanvas(ev, canv)) return;
-      const n = normPos(canv, ev.clientX, ev.clientY);
-      sendWheel({ type: 'im_wheel', room,
-        x: n.x, y: n.y,
-        deltaX: ev.deltaX, deltaY: ev.deltaY,
-        altKey: ev.altKey, ctrlKey: ev.ctrlKey, shiftKey: ev.shiftKey, metaKey: ev.metaKey
-      });
+      wheelPos = normPos(canv, ev.clientX, ev.clientY);
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(() => {
+        const zoom = readZoom();
+        if (zoom !== null) bc.postMessage({ type: 'im_zoom_level', room, zoom, x: wheelPos.x, y: wheelPos.y });
+      }, 250);
     }, { passive: true, capture: true });
 
     // --- HUD Buttons (zoom) ---
@@ -333,6 +342,38 @@
     });
   }
 
+  // ---------- Spectator zoom matching ----------
+  // Each wheel event moves the map's zoom by one fixed step, so step toward the
+  // leader's level at the leader's cursor position until within half a step.
+  let zoomRun = 0;
+  async function zoomTo(target, clientX, clientY) {
+    const run = ++zoomRun; // a newer target cancels this one
+    let step = 0;
+    for (let i = 0; i < 100 && run === zoomRun; i++) {
+      const cur = readZoom();
+      const canv = largestCanvas();
+      if (cur === null || !canv) return;
+      const diff = target - cur;
+      if (Math.abs(diff) <= Math.max(0.5, step / 2)) return;
+      dispatchWheel(canv, { clientX, clientY, deltaX: 0, deltaY: diff > 0 ? -100 : 100 });
+      const next = await waitForZoomChange(cur);
+      if (next === null) return; // zoom limit reached
+      step = Math.abs(next - cur);
+    }
+  }
+
+  function waitForZoomChange(prev, timeoutMs = 500) {
+    const start = Date.now();
+    return new Promise(resolve => {
+      (function check() {
+        const z = readZoom();
+        if (z !== null && z !== prev) return resolve(z);
+        if (Date.now() - start > timeoutMs) return resolve(null);
+        setTimeout(check, 16);
+      })();
+    });
+  }
+
   // ---------- Message handling ----------
   bc.onmessage = (ev) => {
     const p = ev.data;
@@ -379,12 +420,8 @@
       return;
     }
 
-    if (p.type === 'im_wheel' && canv) {
-      dispatchWheel(canv, {
-        clientX, clientY,
-        deltaX: p.deltaX, deltaY: p.deltaY,
-        altKey: p.altKey, ctrlKey: p.ctrlKey, shiftKey: p.shiftKey, metaKey: p.metaKey
-      });
+    if (p.type === 'im_zoom_level') {
+      zoomTo(p.zoom, clientX, clientY);
       return;
     }
 
